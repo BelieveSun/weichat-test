@@ -1,22 +1,20 @@
 package com.believe.sun.service.impl;
 
-import com.believe.sun.util.Util;
 import com.believe.sun.enity.TokenMessage;
 import com.believe.sun.enity.WeiUserInfo;
+import com.believe.sun.service.UtilService;
 import com.believe.sun.service.WeiChatTestService;
+import com.believe.sun.util.RestClientImpl;
 import net.dongliu.requests.Response;
 import org.apache.log4j.Logger;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.net.URLConnection;
+import java.io.File;
+import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -29,7 +27,8 @@ import java.util.Map;
 @Service
 public class WeiChatTestServiceImpl implements WeiChatTestService {
 
-    Logger logger = Logger.getLogger(WeiChatTestService.class);
+    private Logger logger = Logger.getLogger(WeiChatTestService.class);
+    private final UtilService utilService;
     @Value("${weichat_token}")
     private String token;
     @Value("${weichat_state}")
@@ -49,6 +48,11 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
     @Value("${weichat_isFileName}")
     private boolean isFileName;
 
+    @Autowired
+    public WeiChatTestServiceImpl(UtilService utilService) {
+        this.utilService = utilService;
+    }
+
     //TODO:accessToken 是否要重复使用？
     //TODO:用户信息应该调用一次,以后应该从本地获取用户信息
     @Override
@@ -58,7 +62,7 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
         params.put("secret",secret);
         params.put("code",code);
         params.put("grant_type","authorization_code");
-        Response<String> response = Util.get(tokenUrl, params);
+        Response<String> response = new RestClientImpl().get(tokenUrl, params);
         if(response.getStatusCode() == 200){
             String body = response.getBody();
             try {
@@ -89,7 +93,7 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
         params.put("access_token",accessToken);
         params.put("openid",oppenId);
         params.put("lang","zh_CN");
-        Response<String> response = Util.get(weiUserUrl, params);
+        Response<String> response = new RestClientImpl().get(weiUserUrl, params);
         if(response.getStatusCode() == 200){
             String json = null;
             try {
@@ -115,21 +119,18 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
                 userInfo.setCountry(jsonObject.getString("country"));
                 //download image and save to local　server
                 String headimgurl = jsonObject.getString("headimgurl");
-                String saveUrl = this.saveUrl+"/"+userInfo.getOpenid()+".ico";
-                String imgurl = this.imgurl+"/"+userInfo.getOpenid()+".ico";
-                Util.saveImage(headimgurl,saveUrl,isFileName);
+                String fileName = userInfo.getOpenid()+".png";
+                String imgurl = this.imgurl+File.separator+userInfo.getOpenid()+".png";
+                String url = utilService.saveImage(headimgurl, this.saveUrl,fileName, isFileName);
+                if(url != null){
+                    imgurl=url;
+                }
                 logger.debug("saveUrl : "+saveUrl+" , imgurl : "+imgurl);
                 userInfo.setHeadimgurl(imgurl);
                 userInfo.setPrivilege(jsonObject.getJSONArray("privilege").toString());
                 if(jsonObject.has("unionid"))
                     userInfo.setUnionid(jsonObject.getString("unionid"));
                 return userInfo;
-            } catch (JSONException e) {
-                e.printStackTrace();
-            } catch (MalformedURLException e) {
-                e.printStackTrace();
-            } catch (IOException e) {
-                e.printStackTrace();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -143,7 +144,7 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
     public String getSHA1(String timestamp, String nonce, String encrypt) {
         try {
             String[] array = new String[] { token, timestamp, nonce, encrypt };
-            StringBuffer sb = new StringBuffer();
+            StringBuilder sb = new StringBuilder();
             // 字符串排序
             Arrays.sort(array);
             for (int i = 0; i < 4; i++) {
@@ -155,10 +156,10 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
             md.update(str.getBytes());
             byte[] digest = md.digest();
 
-            StringBuffer hexstr = new StringBuffer();
-            String shaHex = "";
-            for (int i = 0; i < digest.length; i++) {
-                shaHex = Integer.toHexString(digest[i] & 0xFF);
+            StringBuilder hexstr = new StringBuilder();
+            String shaHex;
+            for (byte aDigest : digest) {
+                shaHex = Integer.toHexString(aDigest & 0xFF);
                 if (shaHex.length() < 2) {
                     hexstr.append(0);
                 }
@@ -174,8 +175,7 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
 
     @Override
     public boolean checkState(String state) {
-        if(this.state.equals(state)) return true;
-        return false;
+        return this.state.equals(state);
     }
 
     @Override
@@ -184,10 +184,10 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
         // 将 token、timestamp、nonce 三个参数进行字典序排序
         Arrays.sort(arr);
         StringBuilder content = new StringBuilder();
-        for (int i = 0; i < arr.length; i++) {
-            content.append(arr[i]);
+        for (String anArr : arr) {
+            content.append(anArr);
         }
-        MessageDigest md = null;
+        MessageDigest md;
         String tmpStr = null;
 
         try {
@@ -199,17 +199,16 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
             e.printStackTrace();
         }
 
-        content = null;
         // 将 sha1 加密后的字符串可与 signature 对比，标识该请求来源于微信
-        return tmpStr != null ? tmpStr.equals(signature.toUpperCase()) : false;
+        return tmpStr != null && tmpStr.equals(signature.toUpperCase());
     }
 
     private static String byteToStr(byte[] byteArray) {
-        String strDigest = "";
-        for (int i = 0; i < byteArray.length; i++) {
-            strDigest += byteToHexStr(byteArray[i]);
+        StringBuilder strDigest = new StringBuilder();
+        for (byte aByteArray : byteArray) {
+            strDigest.append(byteToHexStr(aByteArray));
         }
-        return strDigest;
+        return strDigest.toString();
     }
 
     private static String byteToHexStr(byte mByte) {
@@ -217,8 +216,7 @@ public class WeiChatTestServiceImpl implements WeiChatTestService {
         char[] tempArr = new char[2];
         tempArr[0] = Digit[(mByte >>> 4) & 0X0F];
         tempArr[1] = Digit[mByte & 0X0F];
-        String s = new String(tempArr);
-        return s;
+        return new String(tempArr);
     }
 
 
